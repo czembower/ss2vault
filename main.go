@@ -4,7 +4,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"log"
 	"os"
 	"regexp"
 	"strings"
@@ -21,7 +20,7 @@ func initVault(ctx context.Context, vaultAddr string, vaultNamespace string, vau
 		vault.WithRequestTimeout(30*time.Second),
 	)
 	if err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
 	client.SetNamespace(vaultNamespace)
 	client.SetToken(vaultToken)
@@ -45,7 +44,7 @@ func initVault(ctx context.Context, vaultAddr string, vaultNamespace string, vau
 	return client
 }
 
-func processCsv(ctx context.Context, inputCsvFile string, vaultKvPath string, client *vault.Client) int {
+func processCsv(ctx context.Context, inputCsvFile string, vaultKvPath string, client *vault.Client, verbose bool, undo bool) int {
 	csv, err := os.OpenFile(inputCsvFile, os.O_RDWR|os.O_CREATE, os.ModePerm)
 	if err != nil {
 		panic(err)
@@ -70,7 +69,17 @@ func processCsv(ctx context.Context, inputCsvFile string, vaultKvPath string, cl
 				secretContent[k] = v
 			}
 		}
-		createKvSecret(ctx, client, inputCsvFile, vaultKvPath, secretPath+"/"+secretName, secretContent)
+		if undo {
+			if verbose {
+				fmt.Printf("deleting: %s\n", secretPath+"/"+secretName)
+			}
+			deleteKvSecret(ctx, client, inputCsvFile, vaultKvPath, secretPath)
+		} else {
+			if verbose {
+				fmt.Printf("creating: %s with fields %v\n", secretPath+"/"+secretName, secretContent)
+			}
+			createKvSecret(ctx, client, inputCsvFile, vaultKvPath, secretPath+"/"+secretName, secretContent)
+		}
 	}
 	return len(csvMap)
 }
@@ -90,6 +99,15 @@ func createKvSecret(ctx context.Context, client *vault.Client, inputCsvFile stri
 	}
 }
 
+func deleteKvSecret(ctx context.Context, client *vault.Client, inputCsvFile string, vaultKvPath string, secretPath string) {
+	_, err := client.Secrets.KvV2DeleteMetadataAndAllVersions(ctx, secretPath, vault.WithMountPath(vaultKvPath))
+
+	if err != nil {
+		fmt.Printf("error: unable to delete secret: %s\n", secretPath)
+		fmt.Printf("%v\n", err)
+	}
+}
+
 func main() {
 
 	var (
@@ -99,6 +117,8 @@ func main() {
 		inputCsvFile   string
 		inputCsvPath   string
 		vaultKvPath    string
+		verbose        bool
+		undo           bool
 	)
 
 	flag.StringVar(&vaultAddr, "vaultAddr", "http://127.0.0.1:8200", "Vault Address")
@@ -107,6 +127,8 @@ func main() {
 	flag.StringVar(&inputCsvFile, "inputCsvFile", "", "Path to specific CSV file to be processed")
 	flag.StringVar(&inputCsvPath, "inputCsvPath", "", "Path to directory containing one or more CSV files to be processed")
 	flag.StringVar(&vaultKvPath, "vaultKvPath", "kv", "Vault KV v2 mount path")
+	flag.BoolVar(&verbose, "verbose", false, "Setting this to true enables detailed output")
+	flag.BoolVar(&undo, "undo", false, "Setting this to true attempts to delete the secrets in Vault that are referenced in the CSV input file(s)")
 	flag.Parse()
 
 	if inputCsvPath == "" && inputCsvFile == "" || vaultToken == "" {
@@ -129,11 +151,11 @@ func main() {
 		for _, file := range files {
 			if !file.IsDir() && strings.HasSuffix(file.Name(), ".csv") {
 				fmt.Printf("Parsing CSV %s... ", file.Name())
-				numSecrets := processCsv(ctx, inputCsvPath+"/"+file.Name(), vaultKvPath, client)
+				numSecrets := processCsv(ctx, inputCsvPath+"/"+file.Name(), vaultKvPath, client, verbose, undo)
 				fmt.Printf("Complete (processed %d secrets)\n", numSecrets)
 			}
 		}
 	} else {
-		processCsv(ctx, inputCsvFile, vaultKvPath, client)
+		processCsv(ctx, inputCsvFile, vaultKvPath, client, verbose, undo)
 	}
 }
