@@ -29,3 +29,12 @@ ss2vault -vaultToken $VAULT_TOKEN -vaultNamespace myNamespace -inputCsvPath /tmp
   -vaultToken string
         Vault token
 ```
+
+## Notes
+
+- Spaces in paths and filenames are converted to underscores during the import
+process
+- Illegal (non-ascii and non-alphanumeric) characters are stripped from paths
+(not from secrets/values)
+- There is no "undo" mechanism, therefore it is recommended to test this tool
+in a development environment or in a dedicated Vault namespace
