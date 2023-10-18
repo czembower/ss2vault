@@ -17,8 +17,8 @@ import (
 
 var (
 	verbose bool
-	debug   bool
 	undo    bool
+	counter = 0
 )
 
 type clientConfig struct {
@@ -101,6 +101,7 @@ func (m secretMeta) Process(auth clientConfig, wg *sync.WaitGroup) {
 		}
 	}
 	fmt.Printf("Finished processing %s (%d secrets)\n", m.CsvFile, len(csvMap))
+	counter = counter + len(csvMap)
 	wg.Done()
 }
 
@@ -147,11 +148,14 @@ func (s secretData) Delete(auth clientConfig, m secretMeta) {
 
 func main() {
 
+	startTime := time.Now().Unix()
+
 	var (
 		auth         clientConfig
 		secretMeta   secretMeta
 		inputCsvFile string
 		inputCsvPath string
+		operation    = "created"
 	)
 
 	auth.Context = context.Background()
@@ -177,6 +181,10 @@ func main() {
 		os.Exit(1)
 	}
 
+	if undo {
+		operation = "deleted"
+	}
+
 	auth.Init()
 
 	if inputCsvPath != "" {
@@ -192,7 +200,12 @@ func main() {
 		}
 		wg.Wait()
 	} else {
+		var wg sync.WaitGroup
+		wg.Add(1)
 		secretMeta.CsvFile = inputCsvFile
-		secretMeta.Process(auth, &sync.WaitGroup{})
+		secretMeta.Process(auth, &wg)
+		wg.Wait()
 	}
+	duration := time.Now().Unix() - startTime
+	fmt.Printf("Successfully %s %d secrets in %d seconds\n", operation, counter, duration)
 }
