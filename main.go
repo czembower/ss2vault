@@ -7,6 +7,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gocarina/gocsv"
@@ -14,18 +15,42 @@ import (
 	"github.com/hashicorp/vault-client-go/schema"
 )
 
-func initVault(ctx context.Context, vaultAddr string, vaultNamespace string, vaultToken string) *vault.Client {
+var (
+	verbose bool
+	debug   bool
+	undo    bool
+)
+
+type clientConfig struct {
+	Context   context.Context
+	Addr      string
+	Namespace string
+	Token     string
+	Client    *vault.Client
+}
+
+type secretMeta struct {
+	CsvFile string
+	KvPath  string
+}
+
+type secretData struct {
+	Path     string
+	Contents map[string]any
+}
+
+func (auth *clientConfig) Init() {
 	client, err := vault.New(
-		vault.WithAddress(vaultAddr),
+		vault.WithAddress(auth.Addr),
 		vault.WithRequestTimeout(30*time.Second),
 	)
 	if err != nil {
 		panic(err)
 	}
-	client.SetNamespace(vaultNamespace)
-	client.SetToken(vaultToken)
+	client.SetNamespace(auth.Namespace)
+	client.SetToken(auth.Token)
 
-	vaultStatus, err := client.System.SealStatus(ctx)
+	vaultStatus, err := client.System.SealStatus(auth.Context)
 	if err != nil {
 		panic(err)
 	}
@@ -34,18 +59,18 @@ func initVault(ctx context.Context, vaultAddr string, vaultNamespace string, vau
 	fmt.Println("Initialized:", vaultStatus.Data.Initialized)
 	fmt.Println("Sealed:", vaultStatus.Data.Sealed)
 
-	authTest, err := client.Auth.TokenLookUpSelf(ctx)
+	authTest, err := client.Auth.TokenLookUpSelf(auth.Context)
 	if err != nil {
 		panic(err)
 	}
 	fmt.Printf("Token Policies: %v\n", authTest.Data["policies"])
 	fmt.Println("---")
 
-	return client
+	auth.Client = client
 }
 
-func processCsv(ctx context.Context, inputCsvFile string, vaultKvPath string, client *vault.Client, verbose bool, undo bool) int {
-	csv, err := os.OpenFile(inputCsvFile, os.O_RDWR|os.O_CREATE, os.ModePerm)
+func (m secretMeta) Process(auth clientConfig, wg *sync.WaitGroup) {
+	csv, err := os.OpenFile(m.CsvFile, os.O_RDWR|os.O_CREATE, os.ModePerm)
 	if err != nil {
 		panic(err)
 	}
@@ -57,53 +82,65 @@ func processCsv(ctx context.Context, inputCsvFile string, vaultKvPath string, cl
 	}
 
 	for _, row := range csvMap {
-		secretContent := make(map[string]string)
-		reName := regexp.MustCompile(`[^a-zA-Z0-9 ]+`)
-		secretName := strings.ReplaceAll(strings.Trim(row["Secret Name"], " "), " ", "_")
-		secretName = reName.ReplaceAllLiteralString(secretName, "")
-		rePath := regexp.MustCompile("[[:^ascii:]]")
-		secretPath := strings.TrimPrefix(strings.ReplaceAll(strings.Trim(strings.ReplaceAll(row["Folder"], "\\", "/"), " "), " ", "_"), "/")
-		secretPath = rePath.ReplaceAllLiteralString(secretPath, "")
+		var s secretData
+		s.Contents = make(map[string]any)
+
+		secretPath := stringCleaning(row["Folder"], true)
+		secretName := stringCleaning(row["Secret Name"], false)
+		s.Path = secretPath + "/" + secretName
+
 		for k, v := range row {
 			if k != "Secret Name" && k != "Folder" && v != "" {
-				secretContent[k] = v
+				s.Contents[k] = v
 			}
 		}
 		if undo {
-			if verbose {
-				fmt.Printf("deleting: %s\n", secretPath+"/"+secretName)
-			}
-			deleteKvSecret(ctx, client, inputCsvFile, vaultKvPath, secretPath+"/"+secretName)
+			s.Delete(auth, m)
 		} else {
-			if verbose {
-				fmt.Printf("creating: %s with fields %v\n", secretPath+"/"+secretName, secretContent)
-			}
-			createKvSecret(ctx, client, inputCsvFile, vaultKvPath, secretPath+"/"+secretName, secretContent)
+			s.Create(auth, m)
 		}
 	}
-	return len(csvMap)
+	fmt.Printf("Finished processing %s (%d secrets)\n", m.CsvFile, len(csvMap))
+	wg.Done()
 }
 
-func createKvSecret(ctx context.Context, client *vault.Client, inputCsvFile string, vaultKvPath string, secretPath string, secretContent map[string]string) {
-	secretInt := make(map[string]interface{}, len(secretContent))
-	for k, v := range secretContent {
-		secretInt[k] = v
+func stringCleaning(s string, path bool) string {
+	var re *regexp.Regexp
+	s = strings.Trim(s, " ")
+	s = strings.ReplaceAll(s, " ", "_")
+	s = strings.ReplaceAll(s, "\\", "/")
+
+	if path {
+		re = regexp.MustCompile("[[:^ascii:]]")
+		s = strings.TrimPrefix(s, "/")
+	} else {
+		re = regexp.MustCompile(`[^a-zA-Z0-9 ]+`)
 	}
-	_, err := client.Secrets.KvV2Write(ctx, secretPath, schema.KvV2WriteRequest{
-		Data: secretInt,
-	}, vault.WithMountPath(vaultKvPath))
+	return re.ReplaceAllLiteralString(s, "")
+}
+
+func (s secretData) Create(auth clientConfig, m secretMeta) {
+	if verbose {
+		fmt.Printf("creating: %s with fields %v\n", s.Path, s.Contents)
+	}
+	_, err := auth.Client.Secrets.KvV2Write(auth.Context, s.Path, schema.KvV2WriteRequest{
+		Data: s.Contents,
+	}, vault.WithMountPath(m.KvPath))
 
 	if err != nil {
-		fmt.Printf("error: unable to process %s: %s\n", inputCsvFile, secretPath)
+		fmt.Printf("error: unable to process %s: %s\n", m.CsvFile, s.Path)
 		fmt.Printf("%v\n", err)
 	}
 }
 
-func deleteKvSecret(ctx context.Context, client *vault.Client, inputCsvFile string, vaultKvPath string, secretPath string) {
-	_, err := client.Secrets.KvV2DeleteMetadataAndAllVersions(ctx, secretPath, vault.WithMountPath(vaultKvPath))
+func (s secretData) Delete(auth clientConfig, m secretMeta) {
+	if verbose {
+		fmt.Printf("deleting: %s\n", s.Path)
+	}
+	_, err := auth.Client.Secrets.KvV2DeleteMetadataAndAllVersions(auth.Context, s.Path, vault.WithMountPath(m.KvPath))
 
 	if err != nil {
-		fmt.Printf("error: unable to delete secret: %s\n", secretPath)
+		fmt.Printf("error: unable to delete secret: %s\n", s.Path)
 		fmt.Printf("%v\n", err)
 	}
 }
@@ -111,27 +148,25 @@ func deleteKvSecret(ctx context.Context, client *vault.Client, inputCsvFile stri
 func main() {
 
 	var (
-		vaultAddr      string
-		vaultNamespace string
-		vaultToken     string
-		inputCsvFile   string
-		inputCsvPath   string
-		vaultKvPath    string
-		verbose        bool
-		undo           bool
+		auth         clientConfig
+		secretMeta   secretMeta
+		inputCsvFile string
+		inputCsvPath string
 	)
 
-	flag.StringVar(&vaultAddr, "vaultAddr", "http://127.0.0.1:8200", "Vault Address")
-	flag.StringVar(&vaultNamespace, "vaultNamespace", "root", "Vault Namespace")
-	flag.StringVar(&vaultToken, "vaultToken", "", "Vault token")
+	auth.Context = context.Background()
+
+	flag.StringVar(&auth.Addr, "vaultAddr", "http://127.0.0.1:8200", "Vault Address")
+	flag.StringVar(&auth.Namespace, "vaultNamespace", "root", "Vault Namespace")
+	flag.StringVar(&auth.Token, "vaultToken", "", "Vault token")
 	flag.StringVar(&inputCsvFile, "inputCsvFile", "", "Path to specific CSV file to be processed")
 	flag.StringVar(&inputCsvPath, "inputCsvPath", "", "Path to directory containing one or more CSV files to be processed")
-	flag.StringVar(&vaultKvPath, "vaultKvPath", "kv", "Vault KV v2 mount path")
+	flag.StringVar(&secretMeta.KvPath, "vaultKvPath", "kv", "Vault KV v2 mount path")
 	flag.BoolVar(&verbose, "verbose", false, "Setting this to true enables detailed output")
 	flag.BoolVar(&undo, "undo", false, "Setting this to true attempts to delete the secrets in Vault that are referenced in the CSV input file(s)")
 	flag.Parse()
 
-	if inputCsvPath == "" && inputCsvFile == "" || vaultToken == "" {
+	if inputCsvPath == "" && inputCsvFile == "" || auth.Token == "" {
 		flag.PrintDefaults()
 		os.Exit(1)
 	}
@@ -142,20 +177,22 @@ func main() {
 		os.Exit(1)
 	}
 
-	ctx := context.Background()
-	client := initVault(ctx, vaultAddr, vaultNamespace, vaultToken)
+	auth.Init()
 
 	if inputCsvPath != "" {
+		var wg sync.WaitGroup
 		files, _ := os.ReadDir(inputCsvPath)
-		fmt.Printf("Found %d files\n", len(files))
+		fmt.Printf("Processing %d files\n", len(files))
 		for _, file := range files {
 			if !file.IsDir() && strings.HasSuffix(file.Name(), ".csv") {
-				fmt.Printf("Parsing CSV %s... ", file.Name())
-				numSecrets := processCsv(ctx, inputCsvPath+"/"+file.Name(), vaultKvPath, client, verbose, undo)
-				fmt.Printf("Complete (processed %d secrets)\n", numSecrets)
+				wg.Add(1)
+				secretMeta.CsvFile = inputCsvPath + "/" + file.Name()
+				go secretMeta.Process(auth, &wg)
 			}
 		}
+		wg.Wait()
 	} else {
-		processCsv(ctx, inputCsvFile, vaultKvPath, client, verbose, undo)
+		secretMeta.CsvFile = inputCsvFile
+		secretMeta.Process(auth, &sync.WaitGroup{})
 	}
 }
