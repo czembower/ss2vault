@@ -73,7 +73,7 @@ func processCsv(ctx context.Context, inputCsvFile string, vaultKvPath string, cl
 			if verbose {
 				fmt.Printf("deleting: %s\n", secretPath+"/"+secretName)
 			}
-			deleteKvSecret(ctx, client, inputCsvFile, vaultKvPath, secretPath)
+			deleteKvSecret(ctx, client, inputCsvFile, vaultKvPath, secretPath+"/"+secretName)
 		} else {
 			if verbose {
 				fmt.Printf("creating: %s with fields %v\n", secretPath+"/"+secretName, secretContent)
