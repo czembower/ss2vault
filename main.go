@@ -30,8 +30,10 @@ type clientConfig struct {
 }
 
 type secretMeta struct {
-	CsvFile string
-	KvPath  string
+	CsvFile            string
+	KvPath             string
+	SecretSourceColumn string
+	PathSourceColumn   string
 }
 
 type secretData struct {
@@ -85,12 +87,12 @@ func (m secretMeta) Process(auth clientConfig, wg *sync.WaitGroup) {
 		var s secretData
 		s.Contents = make(map[string]any)
 
-		secretPath := stringCleaning(row["Folder"], true)
-		secretName := stringCleaning(row["Secret Name"], false)
+		secretPath := stringCleaning(row[m.PathSourceColumn], true)
+		secretName := stringCleaning(row[m.SecretSourceColumn], false)
 		s.Path = secretPath + "/" + secretName
 
 		for k, v := range row {
-			if k != "Secret Name" && k != "Folder" && v != "" {
+			if k != m.SecretSourceColumn && k != m.PathSourceColumn && v != "" {
 				s.Contents[k] = v
 			}
 		}
@@ -166,6 +168,8 @@ func main() {
 	flag.StringVar(&inputCsvFile, "inputCsvFile", "", "Path to specific CSV file to be processed")
 	flag.StringVar(&inputCsvPath, "inputCsvPath", "", "Path to directory containing one or more CSV files to be processed")
 	flag.StringVar(&secretMeta.KvPath, "vaultKvPath", "kv", "Vault KV v2 mount path")
+	flag.StringVar(&secretMeta.SecretSourceColumn, "secretSourceColumn", "Secret Name", "CSV column header to use for the created KV secret")
+	flag.StringVar(&secretMeta.PathSourceColumn, "pathSourceColumn", "Folder", "CSV column header to use to determine the KV path")
 	flag.BoolVar(&verbose, "verbose", false, "Setting this to true enables detailed output")
 	flag.BoolVar(&undo, "undo", false, "Setting this to true attempts to delete the secrets in Vault that are referenced in the CSV input file(s)")
 	flag.Parse()
@@ -173,6 +177,10 @@ func main() {
 	if inputCsvPath == "" && inputCsvFile == "" || auth.Token == "" {
 		flag.PrintDefaults()
 		os.Exit(1)
+	}
+
+	if strings.HasSuffix(inputCsvPath, "/") {
+		strings.TrimSuffix(inputCsvPath, "/")
 	}
 
 	if inputCsvPath != "" && inputCsvFile != "" {
