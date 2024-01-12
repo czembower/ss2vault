@@ -43,6 +43,18 @@ password                   supersecret
 username                   admin
 ```
 
+## Build Steps
+
+1. [Install Go](https://go.dev/doc/install)
+2. Clone this repository
+3. Compile the binary for your architecture:
+
+```shell
+cd ss2vault
+go mod tidy
+go build
+```
+
 ## Prerequisites
 
 1. CSV(s) exported from Secret Server (one CSV per data schema)
@@ -58,7 +70,7 @@ ss2vault -vaultToken $VAULT_TOKEN -vaultNamespace myNamespace -inputCsvPath /tmp
 ```
 
 ```none
-Usage of ./ss2vault:
+Usage of ss2vault:
   -inputCsvFile string
         Path to specific CSV file to be processed
   -inputCsvPath string
