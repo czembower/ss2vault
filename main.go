@@ -22,11 +22,12 @@ var (
 )
 
 type clientConfig struct {
-	Context   context.Context
-	Addr      string
-	Namespace string
-	Token     string
-	Client    *vault.Client
+	Context       context.Context
+	Addr          string
+	Namespace     string
+	Token         string
+	Client        *vault.Client
+	TlsSkipVerify bool
 }
 
 type secretMeta struct {
@@ -42,9 +43,14 @@ type secretData struct {
 }
 
 func (auth *clientConfig) Init() {
+	tls := vault.TLSConfiguration{}
+	tls.InsecureSkipVerify = auth.TlsSkipVerify
+
 	client, err := vault.New(
 		vault.WithAddress(auth.Addr),
 		vault.WithRequestTimeout(30*time.Second),
+		vault.WithRetryConfiguration(vault.RetryConfiguration{}),
+		vault.WithTLS(tls),
 	)
 	if err != nil {
 		panic(err)
@@ -163,6 +169,7 @@ func main() {
 	auth.Context = context.Background()
 
 	flag.StringVar(&auth.Addr, "vaultAddr", "http://127.0.0.1:8200", "Vault Address")
+	flag.BoolVar(&auth.TlsSkipVerify, "vaultTlsSkipVerify", false, "Skip TLS verification")
 	flag.StringVar(&auth.Namespace, "vaultNamespace", "root", "Vault Namespace")
 	flag.StringVar(&auth.Token, "vaultToken", "", "Vault token")
 	flag.StringVar(&inputCsvFile, "inputCsvFile", "", "Path to specific CSV file to be processed")
