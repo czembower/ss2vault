@@ -71,7 +71,7 @@ func (auth *clientConfig) Init() {
 	auth.Client = client
 }
 
-func (m secretMeta) Process(auth clientConfig, wg *sync.WaitGroup) {
+func (m secretMeta) process(auth clientConfig, wg *sync.WaitGroup) {
 	csv, err := os.OpenFile(m.CsvFile, os.O_RDWR|os.O_CREATE, os.ModePerm)
 	if err != nil {
 		panic(err)
@@ -97,9 +97,9 @@ func (m secretMeta) Process(auth clientConfig, wg *sync.WaitGroup) {
 			}
 		}
 		if undo {
-			s.Delete(auth, m)
+			s.delete(auth, m)
 		} else {
-			s.Create(auth, m)
+			s.create(auth, m)
 		}
 	}
 	fmt.Printf("Finished processing %s (%d secrets)\n", m.CsvFile, len(csvMap))
@@ -122,7 +122,7 @@ func stringCleaning(s string, path bool) string {
 	return re.ReplaceAllLiteralString(s, "")
 }
 
-func (s secretData) Create(auth clientConfig, m secretMeta) {
+func (s secretData) create(auth clientConfig, m secretMeta) {
 	if verbose {
 		fmt.Printf("creating: %s with fields %v\n", s.Path, s.Contents)
 	}
@@ -136,7 +136,7 @@ func (s secretData) Create(auth clientConfig, m secretMeta) {
 	}
 }
 
-func (s secretData) Delete(auth clientConfig, m secretMeta) {
+func (s secretData) delete(auth clientConfig, m secretMeta) {
 	if verbose {
 		fmt.Printf("deleting: %s\n", s.Path)
 	}
@@ -203,7 +203,7 @@ func main() {
 			if !file.IsDir() && strings.HasSuffix(file.Name(), ".csv") {
 				wg.Add(1)
 				secretMeta.CsvFile = inputCsvPath + "/" + file.Name()
-				go secretMeta.Process(auth, &wg)
+				go secretMeta.process(auth, &wg)
 			}
 		}
 		wg.Wait()
@@ -211,7 +211,7 @@ func main() {
 		var wg sync.WaitGroup
 		wg.Add(1)
 		secretMeta.CsvFile = inputCsvFile
-		secretMeta.Process(auth, &wg)
+		secretMeta.process(auth, &wg)
 		wg.Wait()
 	}
 	duration := time.Now().Unix() - startTime
